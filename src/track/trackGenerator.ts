@@ -280,10 +280,13 @@ export function computeTrackErrors(
 
   let s = 0;
   if (tangentLen > 0.001) {
-    tangentX /= tangentLen;
+    const rawDx = nextWp.x - currentWp.x;
+    const rawDz = nextWp.z - currentWp.z;
+    tangentX = rawDx / tangentLen;
+    tangentZ = rawDz / tangentLen;
     const segDx = vehicleX - currentWp.x;
     const segDz = vehicleZ - currentWp.z;
-    const rawS = (segDx * (nextWp.x - currentWp.x) + segDz * (nextWp.z - currentWp.z)) / (tangentLen * tangentLen);
+    const rawS = (segDx * rawDx + segDz * rawDz) / (tangentLen * tangentLen);
     // Allow s to extrapolate along start staging pad (down to -2.5) or finish pad (up to 2.5)
     s = Math.max(-2.5, Math.min(2.5, rawS));
   } else {

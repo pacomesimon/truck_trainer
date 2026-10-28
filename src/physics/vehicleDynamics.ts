@@ -142,8 +142,8 @@ export function stepVehicleDynamics(
     brakeForce = -throttle * config.maxBrakeForce;
   }
 
-  // Current velocities in body frame
-  const vx = state.vx;
+  // Current velocities in body frame: truck is forward-facing in Drive (D) transmission
+  const vx = Math.max(0, state.vx);
   const vy = state.vy;
   const r = state.yawRate;
 
@@ -151,14 +151,17 @@ export function stepVehicleDynamics(
   // Front wheel direction has steering angle delta
   const frontVy = vy + a * r;
   const rearVy = vy - b * r;
-  const vxRef = Math.max(Math.abs(vx), 0.8) * (vx < 0 ? -1 : 1);
+  const vxRef = Math.max(vx, 0.8);
 
   const alphaF = Math.atan2(frontVy, vxRef) - steeringAngle;
   const alphaR = Math.atan2(rearVy, vxRef);
 
-  // Slip ratio kappa for braking/traction
+  // Slip ratio kappa for braking/traction:
+  // Forward drive torque generates positive traction slip
   const wheelDriveSlip = throttle > 0 ? (driveForce / Math.max(totalMass * GRAVITY, 1)) * 0.15 : 0;
-  const wheelBrakeSlip = throttle < 0 ? (brakeForce / Math.max(totalMass * GRAVITY, 1)) * -0.2 : 0;
+  // Brakes only retard forward motion (vx > 0). When vehicle is stopped, brakes lock wheels at 0 (never accelerate in reverse).
+  const brakeEffectiveness = Math.max(0, Math.min(1.0, vx / 0.5));
+  const wheelBrakeSlip = throttle < 0 ? (brakeForce / Math.max(totalMass * GRAVITY, 1)) * -0.2 * brakeEffectiveness : 0;
   const kappaF = wheelBrakeSlip; // front wheels steer & brake
   const kappaR = wheelDriveSlip + wheelBrakeSlip; // rear wheels drive & brake
 
@@ -290,7 +293,9 @@ export function stepVehicleDynamics(
   const newYawRate = state.yawRate + dYawRate * dt;
   const newYaw = state.yaw + newYawRate * dt;
 
-  const newVx = Math.max(-5, state.vx + ax * dt); // small reverse speed limit
+  const rawNewVx = state.vx + ax * dt;
+  // In forward Drive transmission, braking near stop locks wheels at 0 without backward roll:
+  const newVx = (throttle < 0 && rawNewVx < 0.1) ? 0 : Math.max(0, rawNewVx);
   const newVy = state.vy + ay * dt;
 
   // World coordinates integration

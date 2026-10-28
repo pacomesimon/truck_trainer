@@ -25,10 +25,14 @@ export interface TrainingMetrics {
   rolloverCount: number;
   cliffBreachCount: number;
   goalCount: number;
+  // Pre-training Demonstration Tracking
+  isPretrained: boolean;
+  pretrainSource: string | null;
+  demonstrationsCount: number;
 }
 
 /**
- * Lightweight In-Browser Neural Q-Network with Replay Buffer
+ * Lightweight In-Browser Neural Q-Network with Replay Buffer & Imitation Pre-training
  * Operates on 32-dim continuous observation vector to 35 discrete action Q-values.
  */
 export class RLAgent {
@@ -48,11 +52,16 @@ export class RLAgent {
   private maxBufferSize: number = 5000;
 
   // Hyperparameters
-  public epsilon: number = 0.85; // Initial exploration
+  public epsilon: number = 0.85; // Initial exploration (lowered on pre-training)
   public minEpsilon: number = 0.05;
   public epsilonDecay: number = 0.995;
   public gamma: number = 0.98; // Discount factor
   public learningRate: number = 0.003;
+
+  // Pre-training & Demonstration State
+  public isPretrained: boolean = false;
+  public pretrainSource: string | null = null;
+  public demonstrationsCount: number = 0;
 
   public metrics: TrainingMetrics = {
     episodes: 0,
@@ -65,6 +74,9 @@ export class RLAgent {
     rolloverCount: 0,
     cliffBreachCount: 0,
     goalCount: 0,
+    isPretrained: false,
+    pretrainSource: null,
+    demonstrationsCount: 0,
   };
 
   constructor() {
@@ -225,6 +237,119 @@ export class RLAgent {
   }
 
   /**
+   * Supervised Imitation / Behavioral Cloning step (DQfD Large Margin Supervised Loss)
+   * Boosts the Q-value for the expert demonstrated action and penalizes violating non-expert actions.
+   */
+  public imitationStep(state: number[], expertAction: number): number {
+    // Hidden activations
+    const hidden = new Float32Array(this.hiddenDim);
+    for (let h = 0; h < this.hiddenDim; h++) {
+      let sum = this.b1[h];
+      const rowOffset = h * this.inputDim;
+      for (let i = 0; i < this.inputDim; i++) {
+        sum += this.w1[rowOffset + i] * (state[i] || 0);
+      }
+      hidden[h] = Math.max(0, sum);
+    }
+
+    // Output Q-values
+    const qValues = new Float32Array(this.outputDim);
+    for (let o = 0; o < this.outputDim; o++) {
+      let sum = this.b2[o];
+      const rowOffset = o * this.hiddenDim;
+      for (let h = 0; h < this.hiddenDim; h++) {
+        sum += this.w2[rowOffset + h] * hidden[h];
+      }
+      qValues[o] = sum;
+    }
+
+    // Find max Q among other actions
+    let maxOtherQ = -Infinity;
+    for (let o = 0; o < this.outputDim; o++) {
+      if (o !== expertAction && qValues[o] > maxOtherQ) {
+        maxOtherQ = qValues[o];
+      }
+    }
+
+    // Expert action target has a margin boost over best alternative
+    const targetQ = Math.max(qValues[expertAction], maxOtherQ) + 1.5;
+    const expertError = targetQ - qValues[expertAction];
+    const clippedExpertError = Math.max(-5, Math.min(5, expertError));
+
+    // Gradient step on expert action output weights
+    const w2Offset = expertAction * this.hiddenDim;
+    for (let h = 0; h < this.hiddenDim; h++) {
+      this.w2[w2Offset + h] += this.learningRate * 1.5 * clippedExpertError * hidden[h];
+    }
+    this.b2[expertAction] += this.learningRate * 1.5 * clippedExpertError;
+
+    // Slightly suppress any competitor action that exceeds margin
+    let loss = expertError * expertError;
+    for (let o = 0; o < this.outputDim; o++) {
+      if (o !== expertAction && qValues[o] > qValues[expertAction] - 0.5) {
+        const suppressError = (qValues[expertAction] - 0.5) - qValues[o];
+        const clippedSup = Math.max(-2, Math.min(2, suppressError));
+        const oOffset = o * this.hiddenDim;
+        for (let h = 0; h < this.hiddenDim; h++) {
+          this.w2[oOffset + h] += this.learningRate * 0.5 * clippedSup * hidden[h];
+        }
+        this.b2[o] += this.learningRate * 0.5 * clippedSup;
+        loss += suppressError * suppressError;
+      }
+    }
+
+    // Backprop to hidden layer
+    for (let h = 0; h < this.hiddenDim; h++) {
+      if (hidden[h] > 0) {
+        const deltaHidden = clippedExpertError * this.w2[w2Offset + h];
+        const w1Offset = h * this.inputDim;
+        for (let i = 0; i < this.inputDim; i++) {
+          this.w1[w1Offset + i] += this.learningRate * 0.3 * deltaHidden * (state[i] || 0);
+        }
+        this.b1[h] += this.learningRate * 0.3 * deltaHidden;
+      }
+    }
+
+    return loss;
+  }
+
+  /**
+   * Directly stores a demonstration from Manual (WASD) or Safe Governor
+   * and immediately trains the model via Behavioral Cloning + Q-learning updates
+   */
+  public storeDemonstration(
+    state: number[],
+    action: number,
+    reward: number,
+    nextState: number[],
+    done: boolean,
+    source: string = 'Manual (WASD)'
+  ) {
+    this.storeTransition(state, action, reward, nextState, done);
+    this.demonstrationsCount++;
+    this.isPretrained = true;
+    this.pretrainSource = source;
+
+    // Run imitation step for instant supervised learning
+    this.imitationStep(state, action);
+
+    // Run replay batch update
+    if (this.replayBuffer.length >= 16) {
+      this.trainStep(16);
+    }
+
+    // Pre-training seeds the model with prior knowledge:
+    // Decays exploration epsilon so live RL training begins with guided exploitation (0.25)
+    // rather than blind random flailing (0.85).
+    this.epsilon = Math.max(0.20, Math.min(this.epsilon, 0.85 * Math.pow(0.998, this.demonstrationsCount)));
+
+    this.metrics.isPretrained = true;
+    this.metrics.pretrainSource = source;
+    this.metrics.demonstrationsCount = this.demonstrationsCount;
+    this.metrics.epsilon = this.epsilon;
+  }
+
+  /**
    * Called when an episode finishes to update metrics and decay epsilon
    */
   public onEpisodeEnd(totalReward: number, terminationReason?: string) {
@@ -255,6 +380,9 @@ export class RLAgent {
     this.initializeWeights();
     this.replayBuffer = [];
     this.epsilon = 0.85;
+    this.isPretrained = false;
+    this.pretrainSource = null;
+    this.demonstrationsCount = 0;
     this.metrics = {
       episodes: 0,
       totalSteps: 0,
@@ -266,6 +394,9 @@ export class RLAgent {
       rolloverCount: 0,
       cliffBreachCount: 0,
       goalCount: 0,
+      isPretrained: false,
+      pretrainSource: null,
+      demonstrationsCount: 0,
     };
   }
 }

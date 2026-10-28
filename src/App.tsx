@@ -12,11 +12,12 @@ import { computeAggressiveAgentAction } from './agents/aggressiveAgent';
 import { RLAgent } from './agents/rlAgent';
 import { TelemetryHUD } from './components/TelemetryHUD';
 import { RewardBreakdown as RewardBreakdownComponent } from './components/RewardBreakdown';
-import { SimulationControls, DriverMode } from './components/SimulationControls';
+import { continuousToDiscrete } from './environment/actionSpace';
+import { SimulationControls, DriverMode, PretrainMetrics } from './components/SimulationControls';
 import { ObservationInspector } from './components/ObservationInspector';
 import { TireDynamicsModal } from './components/TireDynamicsModal';
 import { ConfigDrawer } from './components/ConfigDrawer';
-import { Truck, ShieldCheck, ChevronDown, ChevronUp, Info } from 'lucide-react';
+import { Truck, ShieldCheck, ChevronDown, ChevronUp, Info, Sparkles } from 'lucide-react';
 
 export default function App() {
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
@@ -29,6 +30,15 @@ export default function App() {
   const [speedMultiplier, setSpeedMultiplier] = useState<number>(1);
   const [driverMode, setDriverMode] = useState<DriverMode>('safe_agent');
   const [cameraView, setCameraView] = useState<CameraViewMode>('chase');
+
+  // Pre-training from Demonstrations (Manual WASD & Safe Governor)
+  const [isPretrainingActive, setIsPretrainingActive] = useState<boolean>(true);
+  const [pretrainMetrics, setPretrainMetrics] = useState<PretrainMetrics>({
+    isPretrained: false,
+    pretrainSource: null,
+    demonstrationsCount: 0,
+    epsilon: 0.85,
+  });
 
   // Live Telemetry state (polled at UI rate for smoothness)
   const [vehicleState, setVehicleState] = useState<VehicleState | null>(null);
@@ -160,7 +170,7 @@ export default function App() {
           }
 
           // Inform RL Agent of episode end
-          if (rlAgent && (driverMode === 'rl_train' || driverMode === 'rl_eval')) {
+          if (rlAgent && (driverMode === 'rl_train' || driverMode === 'rl_eval' || isPretrainingActive)) {
             const reason = currentVState.isRolledOver
               ? 'rollover'
               : currentVState.isOffTrack
@@ -180,8 +190,38 @@ export default function App() {
 
         if (driverMode === 'manual') {
           action = updateManualControls();
+          const stepRes = env.step(action);
+
+          // If demonstration pre-training is active, directly train the RL neural network from human actions
+          if (isPretrainingActive && rlAgent) {
+            const discreteAct = continuousToDiscrete(action.steer, action.throttle);
+            rlAgent.storeDemonstration(
+              currentObs.vector,
+              discreteAct,
+              stepRes.reward,
+              stepRes.observation.vector,
+              stepRes.terminated,
+              'Manual (WASD)'
+            );
+          }
+          continue;
         } else if (driverMode === 'safe_agent') {
           action = computeSafeAgentAction(currentObs);
+          const stepRes = env.step(action);
+
+          // If demonstration pre-training is active, directly train the RL neural network from Safe Governor
+          if (isPretrainingActive && rlAgent) {
+            const discreteAct = continuousToDiscrete(action.steer, action.throttle);
+            rlAgent.storeDemonstration(
+              currentObs.vector,
+              discreteAct,
+              stepRes.reward,
+              stepRes.observation.vector,
+              stepRes.terminated,
+              'Safe Governor'
+            );
+          }
+          continue;
         } else if (driverMode === 'aggressive_agent') {
           action = computeAggressiveAgentAction(currentObs);
         } else if (driverMode === 'rl_eval' && rlAgent) {
@@ -219,11 +259,20 @@ export default function App() {
       setRewardBreakdown(renderData.lastRewardBreakdown);
       setCumulativeReward(renderData.totalCumulativeReward);
       setStepCount(renderData.stepCount);
+
+      if (rlAgent) {
+        setPretrainMetrics({
+          isPretrained: rlAgent.isPretrained,
+          pretrainSource: rlAgent.pretrainSource,
+          demonstrationsCount: rlAgent.demonstrationsCount,
+          epsilon: rlAgent.epsilon,
+        });
+      }
     };
 
     animId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animId);
-  }, [isPlaying, speedMultiplier, driverMode, updateManualControls]);
+  }, [isPlaying, speedMultiplier, driverMode, isPretrainingActive, updateManualControls]);
 
   // Single step physics handler
   const handleStepOnce = useCallback(() => {
@@ -231,13 +280,40 @@ export default function App() {
     const env = envRef.current;
     const obs = env.getObservation();
     let action: ContinuousAction = { steer: 0, throttle: 0 };
+    let pretrainSource: string | null = null;
 
-    if (driverMode === 'manual') action = updateManualControls();
-    else if (driverMode === 'safe_agent') action = computeSafeAgentAction(obs);
-    else if (driverMode === 'aggressive_agent') action = computeAggressiveAgentAction(obs);
-    else if (rlAgentRef.current) action = rlAgentRef.current.selectAction(obs.vector, true).continuousAction;
+    if (driverMode === 'manual') {
+      action = updateManualControls();
+      pretrainSource = 'Manual (WASD)';
+    } else if (driverMode === 'safe_agent') {
+      action = computeSafeAgentAction(obs);
+      pretrainSource = 'Safe Governor';
+    } else if (driverMode === 'aggressive_agent') {
+      action = computeAggressiveAgentAction(obs);
+    } else if (rlAgentRef.current) {
+      action = rlAgentRef.current.selectAction(obs.vector, true).continuousAction;
+    }
 
-    env.step(action);
+    const stepRes = env.step(action);
+
+    if (isPretrainingActive && pretrainSource && rlAgentRef.current) {
+      const discreteAct = continuousToDiscrete(action.steer, action.throttle);
+      rlAgentRef.current.storeDemonstration(
+        obs.vector,
+        discreteAct,
+        stepRes.reward,
+        stepRes.observation.vector,
+        stepRes.terminated,
+        pretrainSource
+      );
+      setPretrainMetrics({
+        isPretrained: rlAgentRef.current.isPretrained,
+        pretrainSource: rlAgentRef.current.pretrainSource,
+        demonstrationsCount: rlAgentRef.current.demonstrationsCount,
+        epsilon: rlAgentRef.current.epsilon,
+      });
+    }
+
     const renderData = env.render();
     sceneRef.current.syncVehicle(renderData.vehicleState, 0.02);
     setVehicleState(renderData.vehicleState);
@@ -245,7 +321,7 @@ export default function App() {
     setRewardBreakdown(renderData.lastRewardBreakdown);
     setCumulativeReward(renderData.totalCumulativeReward);
     setStepCount(renderData.stepCount);
-  }, [driverMode, updateManualControls]);
+  }, [driverMode, isPretrainingActive, updateManualControls]);
 
   // Camera Mode Change
   const handleCameraChange = (mode: CameraViewMode) => {
@@ -297,6 +373,77 @@ export default function App() {
       handleReset();
       setIsTrainingFast(false);
     }, 50);
+  };
+
+  // Pre-train from Safe Governor (Autonomous Demonstration Learning)
+  const handlePretrainFromSafeGovernor = (episodesToPretrain: number = 10) => {
+    if (!envRef.current || !rlAgentRef.current) return;
+    setIsTrainingFast(true);
+
+    setTimeout(() => {
+      const env = envRef.current!;
+      const agent = rlAgentRef.current!;
+
+      for (let ep = 0; ep < episodesToPretrain; ep++) {
+        let obs = env.reset();
+        let done = false;
+        let epSteps = 0;
+
+        while (!done && epSteps < 500) {
+          epSteps++;
+          const act = computeSafeAgentAction(obs);
+          const discreteAct = continuousToDiscrete(act.steer, act.throttle);
+          const stepRes = env.step(act);
+          agent.storeDemonstration(
+            obs.vector,
+            discreteAct,
+            stepRes.reward,
+            stepRes.observation.vector,
+            stepRes.terminated,
+            'Safe Governor'
+          );
+          obs = stepRes.observation;
+          done = stepRes.terminated || stepRes.truncated;
+        }
+
+        const vState = env.getVehicleState();
+        const reason = vState.isRolledOver ? 'rollover' : vState.isOffTrack ? 'cliff_breach' : undefined;
+        agent.onEpisodeEnd(env.render().totalCumulativeReward, reason);
+      }
+
+      setPretrainMetrics({
+        isPretrained: agent.isPretrained,
+        pretrainSource: agent.pretrainSource,
+        demonstrationsCount: agent.demonstrationsCount,
+        epsilon: agent.epsilon,
+      });
+
+      handleReset();
+      setIsTrainingFast(false);
+    }, 50);
+  };
+
+  // Reset RL Neural Network Model
+  const handleResetRLModel = () => {
+    if (!rlAgentRef.current) return;
+    rlAgentRef.current.resetModel();
+    setPretrainMetrics({
+      isPretrained: false,
+      pretrainSource: null,
+      demonstrationsCount: 0,
+      epsilon: 0.85,
+    });
+    handleReset();
+  };
+
+  const handleDriverModeChange = (mode: DriverMode) => {
+    setDriverMode(mode);
+    if (envRef.current) {
+      const vState = envRef.current.getVehicleState();
+      if (vState.isRolledOver || vState.isOffTrack) {
+        handleReset();
+      }
+    }
   };
 
   const currentTrack = envRef.current?.getTrack();
@@ -383,7 +530,7 @@ export default function App() {
         <div className="w-full">
           <SimulationControls
             driverMode={driverMode}
-            onDriverModeChange={setDriverMode}
+            onDriverModeChange={handleDriverModeChange}
             isPlaying={isPlaying}
             onTogglePlay={() => setIsPlaying(!isPlaying)}
             onStepOnce={handleStepOnce}
@@ -399,6 +546,11 @@ export default function App() {
             onOpenTireModal={() => setIsTireModalOpen(true)}
             onFastTrainEpisodes={handleFastTrain}
             isTrainingFast={isTrainingFast}
+            isPretrainingActive={isPretrainingActive}
+            onTogglePretraining={() => setIsPretrainingActive(!isPretrainingActive)}
+            pretrainMetrics={pretrainMetrics}
+            onPretrainFromSafeGovernor={handlePretrainFromSafeGovernor}
+            onResetRLModel={handleResetRLModel}
           />
         </div>
       </div>

@@ -5,10 +5,17 @@
 
 import React from 'react';
 import { CameraViewMode } from '../rendering/Truck3DScene';
-import { Play, Pause, StepForward, RotateCcw, Video, Zap, Bot, User, Flame, BrainCircuit, Settings, Eye, Activity } from 'lucide-react';
+import { Play, Pause, StepForward, RotateCcw, Video, Zap, Bot, User, Flame, BrainCircuit, Settings, Eye, Activity, Sparkles, Database } from 'lucide-react';
 import { ContinuousAction } from '../types/truck';
 
 export type DriverMode = 'manual' | 'safe_agent' | 'aggressive_agent' | 'rl_eval' | 'rl_train';
+
+export interface PretrainMetrics {
+  isPretrained: boolean;
+  pretrainSource: string | null;
+  demonstrationsCount: number;
+  epsilon: number;
+}
 
 interface SimulationControlsProps {
   driverMode: DriverMode;
@@ -28,6 +35,12 @@ interface SimulationControlsProps {
   onOpenTireModal: () => void;
   onFastTrainEpisodes: (episodes: number) => void;
   isTrainingFast: boolean;
+  // Demonstration Pre-training Props
+  isPretrainingActive: boolean;
+  onTogglePretraining: () => void;
+  pretrainMetrics: PretrainMetrics;
+  onPretrainFromSafeGovernor: (episodes?: number) => void;
+  onResetRLModel: () => void;
 }
 
 export const SimulationControls: React.FC<SimulationControlsProps> = ({
@@ -48,6 +61,11 @@ export const SimulationControls: React.FC<SimulationControlsProps> = ({
   onOpenTireModal,
   onFastTrainEpisodes,
   isTrainingFast,
+  isPretrainingActive,
+  onTogglePretraining,
+  pretrainMetrics,
+  onPretrainFromSafeGovernor,
+  onResetRLModel,
 }) => {
   return (
     <div className="flex flex-col gap-2.5 text-xs select-none">
@@ -196,43 +214,164 @@ export const SimulationControls: React.FC<SimulationControlsProps> = ({
         </div>
       </div>
 
-      {/* Driver Mode Specific Bar */}
+      {/* Driver Mode Specific Sub-bars */}
+
+      {/* 1. Manual Mode: Keyboard Controls + Demonstration Pre-training Toggle */}
       {driverMode === 'manual' && (
-        <div className="flex items-center justify-between gap-3 bg-slate-900/80 border border-slate-700/60 rounded-xl px-3 py-2 text-[11px] text-slate-300 backdrop-blur-sm">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold text-sky-400">KEYBOARD CONTROLS:</span>
+        <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900/80 border border-slate-700/60 rounded-xl px-3 py-2 text-[11px] text-slate-300 backdrop-blur-sm">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-semibold text-sky-400">KEYBOARD:</span>
             <span><kbd className="px-1.5 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono">W / ↑</kbd> Throttle</span>
             <span><kbd className="px-1.5 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono">S / ↓</kbd> Brake</span>
             <span><kbd className="px-1.5 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono">A / D / ← / →</kbd> Steer</span>
           </div>
 
-          <div className="flex items-center gap-3 font-mono">
-            <div>
-              <span className="text-slate-400 mr-1">Steer:</span>
-              <span className="text-white font-bold">{manualAction.steer.toFixed(2)}</span>
-            </div>
-            <div>
-              <span className="text-slate-400 mr-1">Throttle:</span>
-              <span className="text-white font-bold">{manualAction.throttle.toFixed(2)}</span>
+          <div className="flex items-center gap-3">
+            {/* Pre-training Demonstration Toggle */}
+            <button
+              onClick={onTogglePretraining}
+              title="When enabled, your driving states & actions are directly used to train the RL neural network"
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-bold text-[10px] transition-all cursor-pointer shadow-sm ${
+                isPretrainingActive
+                  ? 'bg-rose-600/90 hover:bg-rose-500 text-white ring-1 ring-rose-400'
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-400 border border-slate-700'
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${isPretrainingActive ? 'bg-white animate-pulse' : 'bg-slate-500'}`} />
+              <span>{isPretrainingActive ? 'PRE-TRAIN: RECORDING ON' : 'PRE-TRAIN: OFF'}</span>
+            </button>
+
+            {isPretrainingActive && (
+              <span className="text-[10px] font-mono text-emerald-400 font-semibold flex items-center gap-1">
+                <Sparkles className="w-3 h-3 text-emerald-400" />
+                <span>{pretrainMetrics.demonstrationsCount} demos stored</span>
+              </span>
+            )}
+
+            <div className="flex items-center gap-2.5 font-mono text-[10px] pl-2 border-l border-slate-800">
+              <div>
+                <span className="text-slate-400 mr-1">Steer:</span>
+                <span className="text-white font-bold">{manualAction.steer.toFixed(2)}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 mr-1">Throttle:</span>
+                <span className="text-white font-bold">{manualAction.throttle.toFixed(2)}</span>
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {(driverMode === 'rl_train' || driverMode === 'rl_eval') && (
-        <div className="flex items-center justify-between gap-2 bg-purple-950/40 border border-purple-800/60 rounded-xl px-3 py-2 text-[11px] backdrop-blur-sm">
-          <div className="flex items-center gap-2 text-purple-200">
-            <BrainCircuit className="w-4 h-4 text-purple-400" />
-            <span>In-Browser Neural Q-Network with Replay Buffer &amp; Bellman TD Targets</span>
+      {/* 2. Safe Governor Mode: Autonomous Cruise + Demonstration Pre-training */}
+      {driverMode === 'safe_agent' && (
+        <div className="flex flex-wrap items-center justify-between gap-3 bg-emerald-950/40 border border-emerald-800/60 rounded-xl px-3 py-2 text-[11px] backdrop-blur-sm">
+          <div className="flex items-center gap-2 text-emerald-200">
+            <Bot className="w-4 h-4 text-emerald-400" />
+            <span>Safe Governor: Curvature preview speed control + dynamic rollover damping</span>
           </div>
-          <button
-            onClick={() => onFastTrainEpisodes(25)}
-            disabled={isTrainingFast}
-            className="px-3 py-1 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-bold rounded-lg border border-purple-400 transition-colors cursor-pointer flex items-center gap-1"
-          >
-            <Zap className="w-3.5 h-3.5" />
-            <span>{isTrainingFast ? 'Training Batch...' : 'Quick-Train 25 Episodes'}</span>
-          </button>
+
+          <div className="flex items-center gap-2">
+            {/* Pre-train Toggle */}
+            <button
+              onClick={onTogglePretraining}
+              title="When enabled, Safe Governor trajectory states & actions are directly used to train the RL neural network"
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-bold text-[10px] transition-all cursor-pointer shadow-sm ${
+                isPretrainingActive
+                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white ring-1 ring-emerald-400'
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-400 border border-slate-700'
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${isPretrainingActive ? 'bg-white animate-pulse' : 'bg-slate-500'}`} />
+              <span>{isPretrainingActive ? 'RECORD & PRE-TRAIN: ON' : 'PRE-TRAIN: OFF'}</span>
+            </button>
+
+            {isPretrainingActive && (
+              <span className="text-[10px] font-mono text-emerald-300 font-semibold flex items-center gap-1">
+                <Sparkles className="w-3 h-3 text-emerald-400" />
+                <span>{pretrainMetrics.demonstrationsCount} demos stored</span>
+              </span>
+            )}
+
+            {/* Quick 10 Episodes Pre-training Batch Button */}
+            <button
+              onClick={() => onPretrainFromSafeGovernor(10)}
+              disabled={isTrainingFast}
+              className="flex items-center gap-1 px-2.5 py-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white font-bold rounded-lg border border-emerald-500 transition-colors cursor-pointer text-[10px]"
+              title="Batch-run 10 safe episodes in background and seed the RL model with expert baseline prior"
+            >
+              <Zap className="w-3.5 h-3.5 text-amber-300" />
+              <span>{isTrainingFast ? 'Pre-training Model...' : 'Auto Pre-train 10 Ep'}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 3. Demon Mode: Rollover Stress Test */}
+      {driverMode === 'aggressive_agent' && (
+        <div className="flex items-center justify-between gap-3 bg-rose-950/40 border border-rose-800/60 rounded-xl px-3 py-2 text-[11px] backdrop-blur-sm text-rose-200">
+          <div className="flex items-center gap-2">
+            <Flame className="w-4 h-4 text-rose-400" />
+            <span>Demon Mode: Maximum throttle aggression into sharp curves to test rollover and tire slip thresholds.</span>
+          </div>
+        </div>
+      )}
+
+      {/* 4. RL Training / Evaluation Mode: Showing Prior Knowledge from Pre-training */}
+      {(driverMode === 'rl_train' || driverMode === 'rl_eval') && (
+        <div className="flex flex-wrap items-center justify-between gap-2 bg-purple-950/40 border border-purple-800/60 rounded-xl px-3 py-2 text-[11px] backdrop-blur-sm">
+          <div className="flex items-center gap-2 text-purple-200">
+            <BrainCircuit className="w-4 h-4 text-purple-400 shrink-0" />
+            <div className="flex items-center gap-2 flex-wrap">
+              <span>{driverMode === 'rl_train' ? 'Live RL Training:' : 'RL Policy Evaluation:'}</span>
+              {pretrainMetrics.isPretrained ? (
+                <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 font-mono text-[10px] flex items-center gap-1 font-bold">
+                  <Sparkles className="w-3 h-3 text-emerald-400" />
+                  <span>
+                    Prior Knowledge: {pretrainMetrics.pretrainSource || 'Demonstrations'} ({pretrainMetrics.demonstrationsCount} demos, ε={pretrainMetrics.epsilon.toFixed(2)})
+                  </span>
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 font-mono text-[10px]">
+                  No Prior Knowledge (Random Exploration, ε={pretrainMetrics.epsilon.toFixed(2)})
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {!pretrainMetrics.isPretrained && (
+              <button
+                onClick={() => onPretrainFromSafeGovernor(10)}
+                disabled={isTrainingFast}
+                className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white font-bold rounded-lg border border-emerald-500 transition-colors cursor-pointer flex items-center gap-1 text-[10px]"
+                title="Seed the model with 10 episodes of Safe Governor knowledge before live training"
+              >
+                <Sparkles className="w-3 h-3 text-amber-300" />
+                <span>{isTrainingFast ? 'Pre-training...' : 'Pre-train from Safe Governor (10 Ep)'}</span>
+              </button>
+            )}
+
+            {pretrainMetrics.isPretrained && (
+              <button
+                onClick={onResetRLModel}
+                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium rounded-lg border border-slate-700 transition-colors cursor-pointer"
+                title="Reset neural network weights and erase pre-trained prior"
+              >
+                Reset Model
+              </button>
+            )}
+
+            {driverMode === 'rl_train' && (
+              <button
+                onClick={() => onFastTrainEpisodes(25)}
+                disabled={isTrainingFast}
+                className="px-3 py-1 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-bold rounded-lg border border-purple-400 transition-colors cursor-pointer flex items-center gap-1 text-[10px]"
+              >
+                <Zap className="w-3.5 h-3.5" />
+                <span>{isTrainingFast ? 'Training Batch...' : 'Quick-Train 25 Episodes'}</span>
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>

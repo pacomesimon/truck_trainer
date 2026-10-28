@@ -138,6 +138,7 @@ export class HeavyTruckEnv {
     const dy = nextWp.y - startWp.y;
     const dz = nextWp.z - startWp.z;
     const distHoriz = Math.hypot(dx, dz);
+    const startHeading = distHoriz > 0.001 ? Math.atan2(dz, dx) : startWp.heading;
     const startGrade = distHoriz > 0.001 ? Math.atan2(dy, distHoriz) : (startWp.gradeAngle ?? 0);
     const startBank = startWp.bankAngle ?? 0;
 
@@ -145,7 +146,7 @@ export class HeavyTruckEnv {
       startWp.x,
       startWp.y,
       startWp.z,
-      startWp.heading,
+      startHeading,
       startGrade,
       startBank,
       this.config.vehicle
