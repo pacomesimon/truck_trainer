@@ -9,7 +9,7 @@ import { Truck3DScene, CameraViewMode } from './rendering/Truck3DScene';
 import { ContinuousAction, EnvironmentConfig, Observation, RewardBreakdown, VehicleState } from './types/truck';
 import { computeSafeAgentAction } from './agents/safeHeuristicAgent';
 import { computeAggressiveAgentAction } from './agents/aggressiveAgent';
-import { RLAgent } from './agents/rlAgent';
+import { RLAgent, RLHyperparameters, DEFAULT_RL_HYPERPARAMETERS } from './agents/rlAgent';
 import { TelemetryHUD } from './components/TelemetryHUD';
 import { RewardBreakdown as RewardBreakdownComponent } from './components/RewardBreakdown';
 import { continuousToDiscrete } from './environment/actionSpace';
@@ -17,6 +17,7 @@ import { SimulationControls, DriverMode, PretrainMetrics } from './components/Si
 import { ObservationInspector } from './components/ObservationInspector';
 import { TireDynamicsModal } from './components/TireDynamicsModal';
 import { ConfigDrawer } from './components/ConfigDrawer';
+import { RLHyperparametersModal } from './components/RLHyperparametersModal';
 import { Truck, ShieldCheck, ChevronDown, ChevronUp, Info, Sparkles } from 'lucide-react';
 
 export default function App() {
@@ -58,6 +59,9 @@ export default function App() {
   const [isTireModalOpen, setIsTireModalOpen] = useState<boolean>(false);
   const [isHudCollapsed, setIsHudCollapsed] = useState<boolean>(false);
   const [isTrainingFast, setIsTrainingFast] = useState<boolean>(false);
+  const [isHyperparametersOpen, setIsHyperparametersOpen] = useState<boolean>(false);
+  const [hyperparameters, setHyperparameters] = useState<RLHyperparameters>(DEFAULT_RL_HYPERPARAMETERS);
+  const [replayBufferSize, setReplayBufferSize] = useState<number>(0);
 
   // Initialize Environment, RL Agent, and 3D Scene
   useEffect(() => {
@@ -68,6 +72,7 @@ export default function App() {
 
     const rlAgent = new RLAgent();
     rlAgentRef.current = rlAgent;
+    setHyperparameters(rlAgent.getHyperparameters());
 
     const scene = new Truck3DScene(canvasMountRef.current);
     sceneRef.current = scene;
@@ -225,10 +230,10 @@ export default function App() {
         } else if (driverMode === 'aggressive_agent') {
           action = computeAggressiveAgentAction(currentObs);
         } else if (driverMode === 'rl_eval' && rlAgent) {
-          const res = rlAgent.selectAction(currentObs.vector, true);
+          const res = rlAgent.selectAction(currentObs, true);
           action = res.continuousAction;
         } else if (driverMode === 'rl_train' && rlAgent) {
-          const res = rlAgent.selectAction(currentObs.vector, false);
+          const res = rlAgent.selectAction(currentObs, false);
           action = res.continuousAction;
 
           // Step physics
@@ -242,7 +247,7 @@ export default function App() {
             stepRes.observation.vector,
             stepRes.terminated
           );
-          rlAgent.trainStep(32);
+          rlAgent.trainStep();
           continue;
         }
 
@@ -360,7 +365,7 @@ export default function App() {
           const act = agent.selectAction(obs.vector, false);
           const stepRes = env.step(act.actionIndex);
           agent.storeTransition(obs.vector, act.actionIndex, stepRes.reward, stepRes.observation.vector, stepRes.terminated);
-          agent.trainStep(32);
+          agent.trainStep();
           obs = stepRes.observation;
           done = stepRes.terminated || stepRes.truncated;
         }
@@ -370,6 +375,8 @@ export default function App() {
         agent.onEpisodeEnd(env.render().totalCumulativeReward, reason);
       }
 
+      setHyperparameters(agent.getHyperparameters());
+      setReplayBufferSize(agent.getReplayBufferSize());
       handleReset();
       setIsTrainingFast(false);
     }, 50);
@@ -411,6 +418,8 @@ export default function App() {
         agent.onEpisodeEnd(env.render().totalCumulativeReward, reason);
       }
 
+      setHyperparameters(agent.getHyperparameters());
+      setReplayBufferSize(agent.getReplayBufferSize());
       setPretrainMetrics({
         isPretrained: agent.isPretrained,
         pretrainSource: agent.pretrainSource,
@@ -427,14 +436,42 @@ export default function App() {
   const handleResetRLModel = () => {
     if (!rlAgentRef.current) return;
     rlAgentRef.current.resetModel();
+    setHyperparameters(rlAgentRef.current.getHyperparameters());
+    setReplayBufferSize(0);
     setPretrainMetrics({
       isPretrained: false,
       pretrainSource: null,
       demonstrationsCount: 0,
-      epsilon: 0.85,
+      epsilon: rlAgentRef.current.epsilon,
     });
     handleReset();
   };
+
+  // Hyperparameters Callbacks
+  const handleUpdateHyperparameters = useCallback((updated: Partial<RLHyperparameters>) => {
+    if (!rlAgentRef.current) return;
+    rlAgentRef.current.setHyperparameters(updated);
+    const current = rlAgentRef.current.getHyperparameters();
+    setHyperparameters(current);
+    setPretrainMetrics((prev) => ({
+      ...prev,
+      epsilon: current.epsilon,
+    }));
+  }, []);
+
+  const handleClearBuffer = useCallback(() => {
+    if (!rlAgentRef.current) return;
+    rlAgentRef.current.clearReplayBuffer();
+    setReplayBufferSize(0);
+  }, []);
+
+  const handleOpenHyperparameters = useCallback(() => {
+    if (rlAgentRef.current) {
+      setReplayBufferSize(rlAgentRef.current.getReplayBufferSize());
+      setHyperparameters(rlAgentRef.current.getHyperparameters());
+    }
+    setIsHyperparametersOpen(true);
+  }, []);
 
   const handleDriverModeChange = (mode: DriverMode) => {
     setDriverMode(mode);
@@ -551,6 +588,8 @@ export default function App() {
             pretrainMetrics={pretrainMetrics}
             onPretrainFromSafeGovernor={handlePretrainFromSafeGovernor}
             onResetRLModel={handleResetRLModel}
+            hyperparameters={hyperparameters}
+            onOpenHyperparameters={handleOpenHyperparameters}
           />
         </div>
       </div>
@@ -589,8 +628,19 @@ export default function App() {
           onClose={() => setIsConfigOpen(false)}
           config={currentConfig}
           onConfigChange={handleConfigChange}
+          onOpenHyperparameters={handleOpenHyperparameters}
         />
       )}
+
+      {/* RL Hyperparameters Modal */}
+      <RLHyperparametersModal
+        isOpen={isHyperparametersOpen}
+        onClose={() => setIsHyperparametersOpen(false)}
+        hyperparameters={hyperparameters}
+        onUpdateHyperparameters={handleUpdateHyperparameters}
+        currentBufferSize={replayBufferSize}
+        onClearBuffer={handleClearBuffer}
+      />
     </div>
   );
 }

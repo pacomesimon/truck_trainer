@@ -12,6 +12,7 @@ interface ConfigDrawerProps {
   onClose: () => void;
   config: EnvironmentConfig;
   onConfigChange: (updated: Partial<EnvironmentConfig>) => void;
+  onOpenHyperparameters?: () => void;
 }
 
 export const ConfigDrawer: React.FC<ConfigDrawerProps> = ({
@@ -19,6 +20,7 @@ export const ConfigDrawer: React.FC<ConfigDrawerProps> = ({
   onClose,
   config,
   onConfigChange,
+  onOpenHyperparameters,
 }) => {
   if (!isOpen) return null;
 
@@ -297,6 +299,30 @@ export const ConfigDrawer: React.FC<ConfigDrawerProps> = ({
             />
           </div>
         </div>
+
+        {/* 4. RL Hyperparameters Tuning */}
+        {onOpenHyperparameters && (
+          <div className="mb-5 bg-purple-950/40 p-3 rounded-xl border border-purple-800/60">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-1.5 font-bold text-purple-300 uppercase tracking-wider text-[11px]">
+                <Sliders className="w-4 h-4 text-purple-400" />
+                <span>RL Model Hyperparameters</span>
+              </div>
+              <button
+                onClick={() => {
+                  onClose();
+                  onOpenHyperparameters();
+                }}
+                className="px-2.5 py-1 bg-purple-700 hover:bg-purple-600 text-white rounded-lg text-[10px] font-bold transition-colors cursor-pointer shadow-sm"
+              >
+                Open Tuner
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-400 leading-relaxed">
+              Manipulate learning rate (α), future reward discount (γ), exploration rate (ε), experience buffer size, and mini-batch sampling.
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="pt-4 border-t border-slate-800 flex items-center justify-between">

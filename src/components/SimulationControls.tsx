@@ -5,8 +5,9 @@
 
 import React from 'react';
 import { CameraViewMode } from '../rendering/Truck3DScene';
-import { Play, Pause, StepForward, RotateCcw, Video, Zap, Bot, User, Flame, BrainCircuit, Settings, Eye, Activity, Sparkles, Database } from 'lucide-react';
+import { Play, Pause, StepForward, RotateCcw, Video, Zap, Bot, User, Flame, BrainCircuit, Settings, Eye, Activity, Sparkles, Database, Sliders } from 'lucide-react';
 import { ContinuousAction } from '../types/truck';
+import { RLHyperparameters } from '../agents/rlAgent';
 
 export type DriverMode = 'manual' | 'safe_agent' | 'aggressive_agent' | 'rl_eval' | 'rl_train';
 
@@ -41,6 +42,9 @@ interface SimulationControlsProps {
   pretrainMetrics: PretrainMetrics;
   onPretrainFromSafeGovernor: (episodes?: number) => void;
   onResetRLModel: () => void;
+  // RL Hyperparameter tuning
+  hyperparameters?: RLHyperparameters;
+  onOpenHyperparameters?: () => void;
 }
 
 export const SimulationControls: React.FC<SimulationControlsProps> = ({
@@ -66,6 +70,8 @@ export const SimulationControls: React.FC<SimulationControlsProps> = ({
   pretrainMetrics,
   onPretrainFromSafeGovernor,
   onResetRLModel,
+  hyperparameters,
+  onOpenHyperparameters,
 }) => {
   return (
     <div className="flex flex-col gap-2.5 text-xs select-none">
@@ -204,6 +210,16 @@ export const SimulationControls: React.FC<SimulationControlsProps> = ({
             <Eye className="w-4 h-4" />
           </button>
 
+          {onOpenHyperparameters && (
+            <button
+              onClick={onOpenHyperparameters}
+              title="Tune RL Hyperparameters (learning rate, discount factor, exploration, batch size, buffer)"
+              className="p-1.5 bg-slate-800 hover:bg-slate-700 text-purple-400 rounded-lg border border-slate-700 transition-colors cursor-pointer"
+            >
+              <Sliders className="w-4 h-4" />
+            </button>
+          )}
+
           <button
             onClick={onOpenConfig}
             title="Tune physics, tracks, mass, CoM offsets, and reward weights"
@@ -324,42 +340,44 @@ export const SimulationControls: React.FC<SimulationControlsProps> = ({
             <div className="flex items-center gap-2 flex-wrap">
               <span>{driverMode === 'rl_train' ? 'Live RL Training:' : 'RL Policy Evaluation:'}</span>
               {pretrainMetrics.isPretrained ? (
-                <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 font-mono text-[10px] flex items-center gap-1 font-bold">
+                <span className="px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-800/80 font-mono text-[10px] flex items-center gap-1 font-bold shadow-sm">
                   <Sparkles className="w-3 h-3 text-emerald-400" />
                   <span>
-                    Prior Knowledge: {pretrainMetrics.pretrainSource || 'Demonstrations'} ({pretrainMetrics.demonstrationsCount} demos, ε={pretrainMetrics.epsilon.toFixed(2)})
+                    Residual DQN: Safe Governor Prior (ε={(pretrainMetrics.epsilon * 100).toFixed(1)}% local explore)
                   </span>
                 </span>
               ) : (
                 <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 font-mono text-[10px]">
-                  No Prior Knowledge (Random Exploration, ε={pretrainMetrics.epsilon.toFixed(2)})
+                  Safe Governor Baseline (ε={(pretrainMetrics.epsilon * 100).toFixed(1)}%)
                 </span>
               )}
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            {!pretrainMetrics.isPretrained && (
+            {onOpenHyperparameters && (
               <button
-                onClick={() => onPretrainFromSafeGovernor(10)}
-                disabled={isTrainingFast}
-                className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white font-bold rounded-lg border border-emerald-500 transition-colors cursor-pointer flex items-center gap-1 text-[10px]"
-                title="Seed the model with 10 episodes of Safe Governor knowledge before live training"
+                onClick={onOpenHyperparameters}
+                className="flex items-center gap-1.5 px-2.5 py-1 bg-purple-900/60 hover:bg-purple-800/80 border border-purple-500/50 text-purple-200 hover:text-white rounded-lg font-bold text-[10px] transition-all shadow-sm cursor-pointer"
+                title="Tune Residual DQN learning rate, discount factor, localized exploration, batch size, and buffer capacity"
               >
-                <Sparkles className="w-3 h-3 text-amber-300" />
-                <span>{isTrainingFast ? 'Pre-training...' : 'Pre-train from Safe Governor (10 Ep)'}</span>
+                <Sliders className="w-3.5 h-3.5 text-purple-300" />
+                <span>Hyperparameters</span>
+                {hyperparameters && (
+                  <span className="font-mono text-[9px] text-purple-300 bg-purple-950/80 px-1 py-0.5 rounded border border-purple-700/50 hidden sm:inline">
+                    α={hyperparameters.learningRate} γ={hyperparameters.gamma} B={hyperparameters.batchSize}
+                  </span>
+                )}
               </button>
             )}
 
-            {pretrainMetrics.isPretrained && (
-              <button
-                onClick={onResetRLModel}
-                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium rounded-lg border border-slate-700 transition-colors cursor-pointer"
-                title="Reset neural network weights and erase pre-trained prior"
-              >
-                Reset Model
-              </button>
-            )}
+            <button
+              onClick={onResetRLModel}
+              className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium rounded-lg border border-slate-700 transition-colors cursor-pointer"
+              title="Reset residual weights to zero (restores pure Safe Governor baseline)"
+            >
+              Reset Residuals (Restore Baseline)
+            </button>
 
             {driverMode === 'rl_train' && (
               <button
