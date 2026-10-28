@@ -1,0 +1,6 @@
+{
+  "name": "Heavy Truck Mountain RL Dynamics Simulation",
+  "description": "High-fidelity physics simulation and Reinforcement Learning environment for heavy-duty trucks navigating perilous mountain tracks with dynamic load transfer and rollover mechanics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
